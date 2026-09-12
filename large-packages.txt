@@ -1,0 +1,10 @@
+# Packages here go through the checkpointed/resumable build in
+# build-large.yml instead of a single-job build, because they
+# routinely exceed the 6-hour GitHub Actions job limit from a cold
+# cache. See README.md "Large package strategy".
+#
+# Example (delete these, they're just illustrations):
+# llvm18
+# rust
+# gcc
+# firefox

@@ -1,0 +1,10 @@
+# One Void Linux package name per line, exactly as shown by:
+#   xbps-query -l | awk '{print $2}' | sed 's/-[0-9].*//'
+#
+# Lines starting with # are ignored. Blank lines are ignored.
+# Do NOT list packages here that also appear in large-packages.txt.
+#
+# Example (delete these, they're just illustrations):
+# ffmpeg
+# htop
+# zstd

@@ -71,9 +71,18 @@ cp "$BINPKGS_DIR"/*.xbps "$GITHUB_WORKSPACE/merged/"
 
 cd "$GITHUB_WORKSPACE/merged"
 if [ -n "${REPO_SIGNING_KEY_B64:-}" ]; then
-  echo "$REPO_SIGNING_KEY_B64" | base64 -d > /tmp/repokey.rsa
+  # tr strips any stray whitespace a copy/paste into the GitHub secret
+  # box may have introduced (a plain space or \r isn't tolerated by
+  # base64 -d the way \n is) - cheap insurance against "invalid input"
+  # from an otherwise-correct secret value.
+  printf '%s' "$REPO_SIGNING_KEY_B64" | tr -d '[:space:]' | base64 -d > /tmp/repokey.rsa
+  if ! head -c 11 /tmp/repokey.rsa 2>/dev/null | grep -q '\-\-\-\-\-BEGIN'; then
+    echo "::error::REPO_SIGNING_KEY_B64 didn't decode to a PEM private key - re-check the secret value (should be \`base64 -w0 repokey.pem\`, pasted whole)" >&2
+    rm -f /tmp/repokey.rsa
+    exit 1
+  fi
   xbps-rindex -a ./*.xbps
-  xbps-rindex --signedby "${REPO_SIGNEDBY:-void-cpu-opt}" --privkey /tmp/repokey.rsa .
+  xbps-rindex --sign --signedby "${REPO_SIGNEDBY:-void-cpu-opt}" --privkey /tmp/repokey.rsa .
   rm -f /tmp/repokey.rsa
 else
   xbps-rindex -a ./*.xbps

@@ -41,19 +41,24 @@ jobs:
       - name: Trigger build-normal.yml per package
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          MATRIX_JSON: ${{ needs.detect.outputs.normal_matrix }}
         run: |
-          echo '${{ needs.detect.outputs.normal_matrix }}' | \
-          python3 -c '
-          import json, sys, subprocess, time
-          items = json.load(sys.stdin)
+          python3 - <<'PY'
+          import json, os, subprocess, time
+          items = json.loads(os.environ["MATRIX_JSON"])
           for it in items:
-              subprocess.run([
-                  "gh", "workflow", "run", "build-normal.yml",
-                  "--repo", "${{ github.repository }}",
-                  "-f", f"package={it[\"package\"]}",
-              ], check=True)
+              pkg = it["package"]
+              subprocess.run(
+                  [
+                      "gh", "workflow", "run", "build-normal.yml",
+                      "--repo", os.environ["REPO"],
+                      "-f", f"package={pkg}",
+                  ],
+                  check=True,
+              )
               time.sleep(5)  # avoid hammering the API when many packages changed at once
-          '
+          PY
 
   dispatch-large:
     needs: detect
@@ -63,17 +68,22 @@ jobs:
       - name: Trigger build-large.yml per package
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          MATRIX_JSON: ${{ needs.detect.outputs.large_matrix }}
         run: |
-          echo '${{ needs.detect.outputs.large_matrix }}' | \
-          python3 -c '
-          import json, sys, subprocess, time
-          items = json.load(sys.stdin)
+          python3 - <<'PY'
+          import json, os, subprocess, time
+          items = json.loads(os.environ["MATRIX_JSON"])
           for it in items:
-              subprocess.run([
-                  "gh", "workflow", "run", "build-large.yml",
-                  "--repo", "${{ github.repository }}",
-                  "-f", f"package={it[\"package\"]}",
-                  "-f", "attempt=1",
-              ], check=True)
+              pkg = it["package"]
+              subprocess.run(
+                  [
+                      "gh", "workflow", "run", "build-large.yml",
+                      "--repo", os.environ["REPO"],
+                      "-f", f"package={pkg}",
+                      "-f", "attempt=1",
+                  ],
+                  check=True,
+              )
               time.sleep(5)
-          '
+          PY

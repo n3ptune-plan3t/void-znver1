@@ -5,6 +5,6 @@
 # Do NOT list packages here that also appear in large-packages.txt.
 #
 # Example (delete these, they're just illustrations):
-# ffmpeg
-# htop
+ffmpeg
+htop
 # zstd

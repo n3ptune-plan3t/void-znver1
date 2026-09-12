@@ -1,0 +1,79 @@
+name: Check for package updates
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'   # every 6 hours; adjust to taste
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# If a scheduled run is still checking (or someone manually re-dispatches
+# this) while a previous one is in flight, cancel the older one instead of
+# running both - it's just re-diffing, so the newer run alone is enough
+# and this avoids double-dispatching build workflows for the same bump.
+concurrency:
+  group: check-updates
+  cancel-in-progress: true
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      normal_matrix: ${{ steps.check.outputs.normal_matrix }}
+      large_matrix: ${{ steps.check.outputs.large_matrix }}
+      has_updates: ${{ steps.check.outputs.has_updates }}
+      has_large_updates: ${{ steps.check.outputs.has_large_updates }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check upstream versions vs built state
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/check_updates.py
+
+  dispatch-normal:
+    needs: detect
+    if: needs.detect.outputs.has_updates == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger build-normal.yml per package
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo '${{ needs.detect.outputs.normal_matrix }}' | \
+          python3 -c '
+          import json, sys, subprocess, time
+          items = json.load(sys.stdin)
+          for it in items:
+              subprocess.run([
+                  "gh", "workflow", "run", "build-normal.yml",
+                  "--repo", "${{ github.repository }}",
+                  "-f", f"package={it[\"package\"]}",
+              ], check=True)
+              time.sleep(5)  # avoid hammering the API when many packages changed at once
+          '
+
+  dispatch-large:
+    needs: detect
+    if: needs.detect.outputs.has_large_updates == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger build-large.yml per package
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo '${{ needs.detect.outputs.large_matrix }}' | \
+          python3 -c '
+          import json, sys, subprocess, time
+          items = json.load(sys.stdin)
+          for it in items:
+              subprocess.run([
+                  "gh", "workflow", "run", "build-large.yml",
+                  "--repo", "${{ github.repository }}",
+                  "-f", f"package={it[\"package\"]}",
+                  "-f", "attempt=1",
+              ], check=True)
+              time.sleep(5)
+          '

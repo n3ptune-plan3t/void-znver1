@@ -1,0 +1,200 @@
+name: Build Void package (large, checkpointed)
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        required: true
+      attempt:
+        required: true
+        default: '1'
+
+permissions:
+  contents: write
+
+env:
+  MAX_ATTEMPTS: 6
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/void-linux/void-glibc-full:20260701r1
+      options: --platform linux/amd64 --privileged
+    outputs:
+      needs_continuation: ${{ steps.build.outputs.needs_continuation }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Allow unprivileged user namespaces (Ubuntu 24.04 AppArmor restriction)
+        run: echo 0 > /proc/sys/kernel/apparmor_restrict_unprivileged_userns || true
+
+      - name: Restore partial build state from a previous attempt
+        uses: actions/cache@v4
+        with:
+          path: |
+            /home/builder/void-packages
+            /var/cache/xbps
+          key: buildstate-${{ inputs.package }}-${{ github.run_id }}
+          restore-keys: |
+            buildstate-${{ inputs.package }}-
+
+      - name: Run checkpointed build
+        id: build
+        run: |
+          set +e
+          chmod +x scripts/watchdog_build.sh
+          sh scripts/watchdog_build.sh "${{ inputs.package }}" 20700
+          STATUS=$?
+          if [ "$STATUS" -eq 75 ]; then
+            echo "needs_continuation=true" >> "$GITHUB_OUTPUT"
+          elif [ "$STATUS" -eq 0 ]; then
+            echo "needs_continuation=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::build failed with status $STATUS"
+            exit "$STATUS"
+          fi
+        env:
+          PKG: ${{ inputs.package }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          CPU_MARCH: ${{ vars.CPU_MARCH || 'znver1' }}
+
+      - name: Save state either way, so a follow-up attempt can resume
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            /home/builder/void-packages
+            /var/cache/xbps
+          key: buildstate-${{ inputs.package }}-${{ github.run_id }}
+
+      - name: Stage build output for the publish job (only if finished)
+        if: steps.build.outputs.needs_continuation == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: hostdir-binpkgs-${{ inputs.package }}
+          path: hostdir-binpkgs/
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Re-dispatch self for next attempt (if not finished)
+        if: steps.build.outputs.needs_continuation == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NEXT=$(( ${{ inputs.attempt }} + 1 ))
+          if [ "$NEXT" -gt "$MAX_ATTEMPTS" ]; then
+            echo "::error::${{ inputs.package }} did not finish within $MAX_ATTEMPTS attempts, giving up"
+            exit 1
+          fi
+          echo "==> dispatching attempt $NEXT for ${{ inputs.package }}"
+          gh workflow run build-large.yml \
+            --repo "${{ github.repository }}" \
+            -f package="${{ inputs.package }}" \
+            -f attempt="$NEXT"
+
+  publish:
+    needs: build
+    if: needs.build.outputs.needs_continuation == 'false'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/void-linux/void-glibc-full:20260701r1
+    concurrency:
+      group: void-repo-publish
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download build output
+        uses: actions/download-artifact@v4
+        with:
+          name: hostdir-binpkgs-${{ inputs.package }}
+          path: hostdir-binpkgs
+
+      - name: Assemble and sign
+        run: sh scripts/assemble_release.sh
+        env:
+          PKG: ${{ inputs.package }}
+          BINPKGS_DIR: ${{ github.workspace }}/hostdir-binpkgs
+          REPO_SIGNING_KEY_B64: ${{ secrets.REPO_SIGNING_KEY }}
+          REPO_SIGNEDBY: ${{ github.repository_owner }}
+
+      - name: Delete previous release for this package (if any)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete "${{ inputs.package }}" --yes --cleanup-tag \
+            --repo "${{ github.repository }}" || true
+
+      - name: Publish per-package release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          tag_name: ${{ inputs.package }}
+          files: out/*.xbps
+
+      - name: Remove stale versions from the rolling repo
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for f in merged/*.xbps; do
+            base=$(basename "$f")
+            pkg=$(echo "$base" | sed -E 's/-[^-]+_[0-9]+\.x86_64\.xbps$//')
+            gh release view repo-glibc --json assets --jq '.assets[].name' 2>/dev/null \
+              | grep "^${pkg}-" \
+              | xargs -r -I{} gh release delete-asset repo-glibc {} --yes || true
+          done
+
+      - name: Publish rolling repo release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          tag_name: repo-glibc
+          name: "Personal repo snapshot (glibc)"
+          files: |
+            merged/*.xbps
+            merged/x86_64-repodata
+
+      - name: Clean up checkpoint caches now that this package is done
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh cache list --repo "${{ github.repository }}" --limit 100 \
+            --json id,key --jq ".[] | select(.key | startswith(\"buildstate-${{ inputs.package }}-\")) | .id" \
+            | xargs -r -I{} gh cache delete {} --repo "${{ github.repository }}" || true
+
+      - name: Record built version in state and refresh status page
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          VER=$(xbps-query --repository="$GITHUB_WORKSPACE/merged" -R --property=pkgver "${{ inputs.package }}" 2>/dev/null || echo "")
+          python3 - "$VER" <<'PY'
+          import json, sys
+          from datetime import datetime, timezone
+          verpkg = sys.argv[1]
+          p = "state/built.json"
+          try:
+              with open(p) as f:
+                  state = json.load(f)
+          except FileNotFoundError:
+              state = {}
+          if verpkg:
+              vr = verpkg.rsplit("-", 1)[-1].replace("_", "-")
+              state["${{ inputs.package }}"] = {
+                  "version": vr,
+                  "built_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              }
+          with open(p, "w") as f:
+              json.dump(state, f, indent=2, sort_keys=True)
+          PY
+          python3 scripts/generate_status.py
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "void-cpu-opt-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add state/built.json STATUS.md
+          git commit -m "state: ${{ inputs.package }} built (large)" || true
+          git pull --rebase
+          git push

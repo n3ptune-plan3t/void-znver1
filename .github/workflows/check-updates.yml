@@ -37,6 +37,14 @@ jobs:
     needs: detect
     if: needs.detect.outputs.has_updates == 'true'
     runs-on: ubuntu-latest
+    # Overrides the workflow-level `contents: read` above - triggering
+    # another workflow's workflow_dispatch via the API needs actions:
+    # write specifically, which contents: read doesn't include. This
+    # is scoped to just this job rather than raised at the top of the
+    # file, since detect (read-only) and the build/publish workflows
+    # (contents: write, for their own git pushes) don't need it.
+    permissions:
+      actions: write
     steps:
       - name: Trigger build-normal.yml per package
         env:
@@ -64,6 +72,8 @@ jobs:
     needs: detect
     if: needs.detect.outputs.has_large_updates == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      actions: write
     steps:
       - name: Trigger build-large.yml per package
         env:

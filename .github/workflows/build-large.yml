@@ -104,15 +104,17 @@ jobs:
       group: void-repo-publish
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
-
-      # The publish job gets a fresh void-glibc-full container - it does
-      # NOT inherit the `xbps-install ... git python3 github-cli` from
-      # build_only.sh, which only ran in the separate build job. gh is
-      # provided by the softprops/action-gh-release action itself, but
-      # git and python3 are used directly by shell steps below.
+      # Must run BEFORE checkout: actions/checkout falls back to a plain
+      # tarball download (via the GitHub API) with no .git directory at
+      # all when it can't find a git executable in the environment - the
+      # publish job's container has no git preinstalled, so checkout was
+      # silently degrading to a non-repo checkout and every later git
+      # command (state commit, push) failed with "not in a git directory"
+      # because there genuinely was no .git anywhere in the workspace.
       - name: Install publish dependencies
         run: xbps-install -Suy && xbps-install -Sy git python3
+
+      - uses: actions/checkout@v4
 
       - name: Download build output
         uses: actions/download-artifact@v4
@@ -203,11 +205,20 @@ jobs:
           # can hit a "dubious ownership" mismatch even when the path looks
           # right, e.g. if the container has a symlink in it (/__w ->
           # the real mount) - git's ownership check compares the resolved
-          # realpath, so an exact string match can silently miss. The
-          # failure mode for a plain (non---global) `git config` in that
-          # state is the confusing "fatal: not in a git directory" rather
-          # than the usual dubious-ownership message.
+          # realpath, so an exact string match can silently miss.
           git config --global --add safe.directory '*'
+          if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            echo "::error::not inside a git work tree at $(pwd) - dumping diagnostics"
+            echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+            echo "pwd: $(pwd)"
+            echo "--- ls -la . ---"
+            ls -la .
+            echo "--- ls -la .git (if present) ---"
+            ls -la .git 2>&1 || echo "(no .git entry here)"
+            echo "--- realpath . ---"
+            realpath . 2>&1 || true
+            exit 1
+          fi
           git config user.name "void-cpu-opt-bot"
           git config user.email "actions@users.noreply.github.com"
           git add state/built.json STATUS.md

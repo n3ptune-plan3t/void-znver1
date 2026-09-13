@@ -79,11 +79,15 @@ if [ -n "${REPO_SIGNING_KEY_B64:-}" ]; then
     echo "==> REPO_SIGNING_KEY_B64 looks like a raw PEM, not base64 - using it as-is"
     printf '%s\n' "$REPO_SIGNING_KEY_B64" > /tmp/repokey.rsa
   else
-    # tr strips any stray whitespace a copy/paste into the GitHub secret
-    # box may have introduced (a plain space or \r isn't tolerated by
-    # base64 -d the way \n is) - cheap insurance against "invalid input"
-    # from an otherwise-correct secret value.
-    if ! printf '%s' "$REPO_SIGNING_KEY_B64" | tr -d '[:space:]' | base64 -d > /tmp/repokey.rsa 2>/tmp/b64err.log; then
+    # --ignore-garbage (GNU base64) discards any byte outside the base64
+    # alphabet instead of erroring on it. This is deliberately more
+    # permissive than trimming whitespace: it also absorbs things like a
+    # trailing no-newline marker some shells print after output that
+    # doesn't end in \n (zsh's "%", fish's "⏎") - `base64 -w0` never
+    # emits a trailing newline, so this is easy to accidentally copy
+    # along with the real value - plus stray quotes or a lone \r, none
+    # of which `tr -d '[:space:]'` alone would catch.
+    if ! printf '%s' "$REPO_SIGNING_KEY_B64" | base64 -d --ignore-garbage > /tmp/repokey.rsa 2>/tmp/b64err.log; then
       echo "::error::REPO_SIGNING_KEY_B64 failed to base64-decode: $(cat /tmp/b64err.log) - re-check the secret value (should be \`base64 -w0 repokey.pem\`, pasted whole, with no surrounding quotes)" >&2
       rm -f /tmp/repokey.rsa /tmp/b64err.log
       exit 1

@@ -71,13 +71,27 @@ cp "$BINPKGS_DIR"/*.xbps "$GITHUB_WORKSPACE/merged/"
 
 cd "$GITHUB_WORKSPACE/merged"
 if [ -n "${REPO_SIGNING_KEY_B64:-}" ]; then
-  # tr strips any stray whitespace a copy/paste into the GitHub secret
-  # box may have introduced (a plain space or \r isn't tolerated by
-  # base64 -d the way \n is) - cheap insurance against "invalid input"
-  # from an otherwise-correct secret value.
-  printf '%s' "$REPO_SIGNING_KEY_B64" | tr -d '[:space:]' | base64 -d > /tmp/repokey.rsa
+  # Accept either the intended base64-encoded key OR a raw PEM pasted
+  # directly into the secret by mistake - the latter is the far more
+  # common failure mode (base64 -d aborting with "invalid input"
+  # because '-----BEGIN...' contains '-', which isn't valid base64).
+  if printf '%s' "$REPO_SIGNING_KEY_B64" | grep -q -- '-----BEGIN'; then
+    echo "==> REPO_SIGNING_KEY_B64 looks like a raw PEM, not base64 - using it as-is"
+    printf '%s\n' "$REPO_SIGNING_KEY_B64" > /tmp/repokey.rsa
+  else
+    # tr strips any stray whitespace a copy/paste into the GitHub secret
+    # box may have introduced (a plain space or \r isn't tolerated by
+    # base64 -d the way \n is) - cheap insurance against "invalid input"
+    # from an otherwise-correct secret value.
+    if ! printf '%s' "$REPO_SIGNING_KEY_B64" | tr -d '[:space:]' | base64 -d > /tmp/repokey.rsa 2>/tmp/b64err.log; then
+      echo "::error::REPO_SIGNING_KEY_B64 failed to base64-decode: $(cat /tmp/b64err.log) - re-check the secret value (should be \`base64 -w0 repokey.pem\`, pasted whole, with no surrounding quotes)" >&2
+      rm -f /tmp/repokey.rsa /tmp/b64err.log
+      exit 1
+    fi
+    rm -f /tmp/b64err.log
+  fi
   if ! head -c 11 /tmp/repokey.rsa 2>/dev/null | grep -q '\-\-\-\-\-BEGIN'; then
-    echo "::error::REPO_SIGNING_KEY_B64 didn't decode to a PEM private key - re-check the secret value (should be \`base64 -w0 repokey.pem\`, pasted whole)" >&2
+    echo "::error::REPO_SIGNING_KEY_B64 didn't decode to a PEM private key - re-check the secret value" >&2
     rm -f /tmp/repokey.rsa
     exit 1
   fi

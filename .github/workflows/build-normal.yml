@@ -75,15 +75,17 @@ jobs:
       group: void-repo-publish
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
-
-      # The publish job gets a fresh void-glibc-full container - it does
-      # NOT inherit the `xbps-install ... git python3 github-cli` from
-      # build_only.sh, which only ran in the separate build job. gh is
-      # provided by the softprops/action-gh-release action itself, but
-      # git and python3 are used directly by shell steps below.
+      # Must run BEFORE checkout: actions/checkout falls back to a plain
+      # tarball download (via the GitHub API) with no .git directory at
+      # all when it can't find a git executable in the environment - the
+      # publish job's container has no git preinstalled, so checkout was
+      # silently degrading to a non-repo checkout and every later git
+      # command (state commit, push) failed with "not in a git directory"
+      # because there genuinely was no .git anywhere in the workspace.
       - name: Install publish dependencies
         run: xbps-install -Suy && xbps-install -Sy git python3
+
+      - uses: actions/checkout@v4
 
       - name: Download build output
         uses: actions/download-artifact@v4

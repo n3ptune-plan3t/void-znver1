@@ -6,5 +6,5 @@
 #
 # Example (delete these, they're just illustrations):
 # ffmpeg
-htop
+# htop
 # zstd

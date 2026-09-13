@@ -77,6 +77,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The publish job gets a fresh void-glibc-full container - it does
+      # NOT inherit the `xbps-install ... git python3 github-cli` from
+      # build_only.sh, which only ran in the separate build job. gh is
+      # provided by the softprops/action-gh-release action itself, but
+      # git and python3 are used directly by shell steps below.
+      - name: Install publish dependencies
+        run: xbps-install -Suy && xbps-install -Sy git python3
+
       - name: Download build output
         uses: actions/download-artifact@v4
         with:
